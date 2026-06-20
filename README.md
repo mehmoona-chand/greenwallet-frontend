@@ -302,7 +302,7 @@ Real commit log from the repository (oldest → newest):
 | 2026-06-19 | `c29f018` | feat: connect frontend to live backend API |
 | 2026-06-20 | `efb4881` | fix: add frontend URL to CORS allowed origins |
 
-*(31 commits total, pulled directly from `git log` on the live repo.)*
+
 
 ---
 
