@@ -26,20 +26,20 @@ const BADGES_DEF = [
   { id:'calculator', icon:'🧮', name:'Calc Pro',      desc:'Save 3+ calculations',          check: h => h.length >= 3 },
 ];
 
-const LEADERBOARD_DATA = [
-  { name:'Ahmed K.',  co2:1.8, initials:'AK' },
-  { name:'Sara M.',   co2:2.1, initials:'SM' },
-  { name:'Bilal R.',  co2:2.4, initials:'BR' },
-  { name:'Nida F.',   co2:2.9, initials:'NF' },
-  { name:'Usman T.',  co2:3.5, initials:'UT' },
+const LEADERBOARD_FALLBACK = [
+  { name:'Ahmed K.', level:7, xp:2100, avgCO2:1.65, levelLabel:'Eco Crusader', initials:'AK', isSeed:true },
+  { name:'Sara M.',  level:6, xp:1580, avgCO2:1.92, levelLabel:'Eco Champion', initials:'SM', isSeed:true },
+  { name:'Bilal R.', level:5, xp:920,  avgCO2:2.15, levelLabel:'Climate Guardian', initials:'BR', isSeed:true },
+  { name:'Nida F.',  level:4, xp:620,  avgCO2:2.38, levelLabel:'Eco Warrior', initials:'NF', isSeed:true },
+  { name:'Usman T.', level:3, xp:380,  avgCO2:2.55, levelLabel:'Carbon Cutter', initials:'UT', isSeed:true },
 ];
 
 const CAT_ICONS  = { car:'🚗', public:'🚌', meals:'🍽️', electricity:'⚡', flights:'✈️', waste:'🗑️' };
 const CAT_LABELS = { car:'Car', public:'Transit', meals:'Food', electricity:'Power', flights:'Flights', waste:'Waste' };
 
-document.addEventListener('DOMContentLoaded', init);
+document.addEventListener('DOMContentLoaded', () => { init().catch(console.error); });
 
-function init() {
+async function init() {
   const history  = JSON.parse(localStorage.getItem('greenWalletHistory') || '[]');
   const settings = JSON.parse(localStorage.getItem('gwProfile') || '{}');
   const username = localStorage.getItem('greenWalletUser') || settings.name || 'Eco User';
@@ -51,7 +51,7 @@ function init() {
   renderBadges(history);
   renderBreakdown(history);
   renderGoalRing(history, goalKg);
-  renderLeaderboard(username, history);
+  await renderLeaderboard(username, history);
   renderMiniChart(history);
   setupModal(settings, username, location, goalKg);
   setupAvatarUpload();
@@ -221,35 +221,109 @@ function renderGoalRing(history, goalKg) {
 }
 
 // ── LEADERBOARD ───────────────────────────────
-function renderLeaderboard(username, history) {
+async function renderLeaderboard(username, history) {
   const list   = document.getElementById('leaderboard-list');
   const rankEl = document.getElementById('your-rank');
+  const noteEl = document.getElementById('leaderboard-note');
+  list.innerHTML = '<div class="lb-loading"><i class="fas fa-spinner fa-spin"></i> Loading rankings…</div>';
+
+  let board = [];
+  let myRank = null;
+  let total = 0;
+  let youInTop = false;
+  let fromApi = false;
+
+  if (typeof GW !== 'undefined' && GW.auth.isLoggedIn()) {
+    const data = await GW.stats.getLeaderboard();
+    if (data?.success) {
+      board    = data.leaderboard || [];
+      myRank   = data.myRank;
+      total    = data.total || board.length;
+      youInTop = data.youInTop;
+      fromApi  = true;
+    }
+  }
+
+  if (!fromApi) {
+    const co2s  = history.map(e => parseFloat(e.co2));
+    const myAvg = co2s.length ? (co2s.reduce((a, b) => a + b, 0) / co2s.length) : null;
+    let myXp = history.length * 50;
+    history.forEach(e => {
+      const c = parseFloat(e.co2);
+      if (c < PAKISTAN_DAILY) myXp += 30;
+      if (c < 2.0) myXp += 20;
+    });
+    let myLevel = 1;
+    for (let i = LEVELS.length - 1; i >= 0; i--) {
+      if (myXp >= LEVELS[i].min) { myLevel = i + 1; break; }
+    }
+
+    board = [
+      ...LEADERBOARD_FALLBACK,
+      {
+        name: username,
+        level: myLevel,
+        xp: myXp,
+        avgCO2: myAvg,
+        levelLabel: LEVELS[Math.min(myLevel - 1, LEVELS.length - 1)].label,
+        initials: getInitials(username),
+        isYou: true,
+        isSeed: false,
+      },
+    ].sort((a, b) => {
+      if (b.xp !== a.xp) return b.xp - a.xp;
+      if (b.level !== a.level) return b.level - a.level;
+      return (a.avgCO2 ?? 999) - (b.avgCO2 ?? 999);
+    }).slice(0, 10);
+
+    myRank   = board.findIndex(p => p.isYou) + 1;
+    total    = board.length;
+    youInTop = myRank > 0;
+  }
+
+  if (noteEl) {
+    if (fromApi) {
+      noteEl.innerHTML = '<i class="fas fa-trophy"></i> Live rankings — log entries & earn XP to climb!';
+      noteEl.style.background = 'rgba(42,157,143,0.08)';
+      noteEl.style.borderColor = 'rgba(42,157,143,0.25)';
+      noteEl.style.color = 'var(--green-dark)';
+    } else {
+      noteEl.innerHTML = '<i class="fas fa-info-circle"></i> Offline mode — sign in to see live rankings';
+    }
+  }
+
   list.innerHTML = '';
+  const rankColors = ['gold', 'silver', 'bronze'];
 
-  const co2s  = history.map(e => parseFloat(e.co2));
-  const myAvg = co2s.length ? (co2s.reduce((a,b) => a+b,0) / co2s.length) : 99;
 
-  const board = [...LEADERBOARD_DATA, { name: username + ' (You)', co2: myAvg, initials: getInitials(username), isYou: true }]
-    .sort((a,b) => a.co2 - b.co2);
 
-  const rankColors = ['gold','silver','bronze'];
   board.forEach((player, i) => {
     const div = document.createElement('div');
-    div.className = 'lb-item' + (player.isYou ? ' you' : '');
+    div.className = 'lb-item' + (player.isYou ? ' you' : '') + (player.isSeed ? ' seed' : '');
+    const co2Text = player.avgCO2 != null
+      ? `${player.avgCO2.toFixed(2)} kg/day avg`
+      : 'No entries yet';
+
     div.innerHTML = `
-      <div class="lb-rank ${rankColors[i] || ''}">${i < 3 ? ['🥇','🥈','🥉'][i] : i+1}</div>
-      <div class="lb-avatar" style="background:${player.isYou ? '#2a9d8f' : '#8ab8b3'}">${player.initials}</div>
+      <div class="lb-rank ${rankColors[i] || ''}">${i < 3 ? ['🥇','🥈','🥉'][i] : i + 1}</div>
+      <div class="lb-avatar" style="background:${player.isYou ? '#2a9d8f' : player.isSeed ? '#8ab8b3' : '#2a9d8f'}">${player.initials}</div>
       <div class="lb-info">
-        <div class="lb-name">${player.name}</div>
-        <div class="lb-co2">${player.co2.toFixed(2)} kg/day avg</div>
+        <div class="lb-name">${player.name}${player.isYou ? ' (You)' : ''}</div>
+        <div class="lb-meta">Lvl ${player.level} · ${player.xp} XP · ${player.levelLabel}</div>
+        <div class="lb-co2">${co2Text}</div>
       </div>
-      <span class="lb-tree">${player.co2 < PAKISTAN_DAILY ? '🌿' : '🌱'}</span>
+      <span class="lb-tree">${player.level >= 4 ? '🌿' : '🌱'}</span>
     `;
     list.appendChild(div);
   });
 
-  const myRank = board.findIndex(p => p.isYou) + 1;
-  rankEl.textContent = `You are ranked #${myRank} out of ${board.length} users`;
+  if (myRank) {
+    rankEl.textContent = youInTop
+      ? `You are ranked #${myRank} out of ${total} eco-champions`
+      : `You are ranked #${myRank} out of ${total} — keep logging to reach the top 10!`;
+  } else {
+    rankEl.textContent = 'Log your first entry to join the leaderboard!';
+  }
 }
 
 function getInitials(name) {

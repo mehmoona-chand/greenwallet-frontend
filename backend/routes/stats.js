@@ -86,45 +86,70 @@ router.get('/dashboard', async (req, res) => {
 
 // ════════════════════════════════════════════
 // GET /api/stats/leaderboard
-// Only shows name + avgCO2 — no private data
+// Ranks by XP & level; merges real users with seed demo data
 // ════════════════════════════════════════════
+const {
+  SEED_LEADERBOARD,
+  getLevelLabel,
+  getInitials,
+  sortLeaderboard,
+  qualifiesForBoard,
+} = require('../utils/leaderboard');
+
 router.get('/leaderboard', async (req, res) => {
   try {
-    // Get all users — only public fields
-    const users = await User.find({ isActive: true }, 'name location level xp').lean();
+    const users = await User.find({ isActive: true }, 'name location level xp streak').lean();
 
-    const board = await Promise.all(
-      users.map(async (user) => {
-        const calcs = await Calculation.find({ userId: user._id }, 'totalCO2').lean();
-        const co2s  = calcs.map(c => c.totalCO2);
-        const avg   = co2s.length ? co2s.reduce((a,b)=>a+b,0)/co2s.length : null;
-        return {
-          // Never expose email, _id, or other private fields
-          name:    user.name,
-          location:user.location,
-          level:   user.level,
-          xp:      user.xp,
-          avgCO2:  avg !== null ? parseFloat(avg.toFixed(2)) : null,
-          entries: calcs.length,
-          isYou:   user._id.toString() === req.user._id.toString(),
-        };
-      })
-    );
+    const realEntries = (
+      await Promise.all(
+        users.map(async (user) => {
+          const calcs = await Calculation.find({ userId: user._id }, 'totalCO2').lean();
+          const co2s  = calcs.map(c => c.totalCO2);
+          const avg   = co2s.length ? co2s.reduce((a, b) => a + b, 0) / co2s.length : null;
+          const isYou = user._id.toString() === req.user._id.toString();
 
-    const sorted = board
-      .filter(u => u.avgCO2 !== null)
-      .sort((a,b) => a.avgCO2 - b.avgCO2)
-      .slice(0, 10);
+          if (!qualifiesForBoard(user, calcs.length) && !isYou) return null;
 
-    const myRank = sorted.findIndex(u => u.isYou) + 1;
+          return {
+            name:       user.name,
+            location:   user.location,
+            level:      user.level || 1,
+            xp:         user.xp || 0,
+            avgCO2:     avg !== null ? parseFloat(avg.toFixed(2)) : null,
+            entries:    calcs.length,
+            levelLabel: getLevelLabel(user.level || 1),
+            initials:   getInitials(user.name),
+            isYou,
+            isSeed:     false,
+          };
+        })
+      )
+    ).filter(Boolean);
+
+    const seedEntries = SEED_LEADERBOARD.map(s => ({
+      ...s,
+      levelLabel: getLevelLabel(s.level),
+      initials:   getInitials(s.name),
+      isYou:      false,
+      isSeed:     true,
+    }));
+
+    const fullBoard = [...realEntries, ...seedEntries].sort(sortLeaderboard);
+    const leaderboard = fullBoard.slice(0, 10);
+
+    const youEntry = realEntries.find(u => u.isYou);
+    const myRank   = youEntry ? fullBoard.findIndex(u => u.isYou) + 1 : null;
 
     res.status(200).json({
       success:     true,
-      leaderboard: sorted,
-      myRank:      myRank || null,
-      total:       board.length,
+      leaderboard,
+      myRank,
+      total:       fullBoard.length,
+      youInTop:    leaderboard.some(u => u.isYou),
+      realCount:   realEntries.length,
     });
   } catch (error) {
+    logger.error(`Leaderboard error: ${error.message}`);
     res.status(500).json({ success: false, message: 'Failed to fetch leaderboard' });
   }
 });
